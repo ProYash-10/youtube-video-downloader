@@ -1,0 +1,6 @@
+{
+  "name": "YTVideoDownloader",
+  "description": "A web application to download YouTube videos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
