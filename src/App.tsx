@@ -1,9 +1,4 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, FormEvent } from "react";
+import React, { useState, FormEvent, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Download,
@@ -14,7 +9,11 @@ import {
   AlertCircle,
   FileVideo2,
   Film,
-  HardDriveDownload
+  HardDriveDownload,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 
 interface Format {
@@ -31,6 +30,7 @@ interface Format {
 }
 
 interface VideoInfo {
+  url: string;
   title: string;
   thumbnail: string;
   lengthSeconds: string;
@@ -38,27 +38,38 @@ interface VideoInfo {
   formats: Format[];
 }
 
+interface DownloadState {
+  downloaded: number;
+  total: number;
+  active: boolean;
+}
+
 export default function App() {
-  const [url, setUrl] = useState("");
+  const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [videos, setVideos] = useState<VideoInfo[]>([]);
+  const [expandedVideos, setExpandedVideos] = useState<Set<string>>(new Set());
+  const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
+  const [copied, setCopied] = useState(false);
 
   const fetchVideoInfo = async (e: FormEvent) => {
     e.preventDefault();
-    if (!url) return;
+    const urls = inputText.split(/[\n, ]+/).map(u => u.trim()).filter(Boolean);
+    if (!urls.length) return;
 
     setLoading(true);
     setError("");
-    setVideoInfo(null);
+    setVideos([]);
+    setExpandedVideos(new Set()); // start collapsed or auto-expand if single
 
     try {
-      const res = await fetch("/api/info", {
+      const res = await fetch("/api/info/batch", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ urls }),
       });
 
       const data = await res.json();
@@ -66,7 +77,11 @@ export default function App() {
         throw new Error(data.error || "Failed to fetch video info");
       }
 
-      setVideoInfo(data);
+      setVideos(data);
+      if (data.length === 1) {
+        setExpandedVideos(new Set([data[0].url]));
+      }
+
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred");
     } finally {
@@ -74,38 +89,99 @@ export default function App() {
     }
   };
 
-  const formatFileSize = (bytes?: string) => {
-    if (!bytes) return "Unknown size";
-    const size = parseInt(bytes, 10);
+  const handleCopyUrl = () => {
+    if (!inputText) return;
+    navigator.clipboard.writeText(inputText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const formatFileSize = (bytes?: string | number) => {
+    if (bytes === undefined || bytes === null || bytes === "0") return "Unknown size";
+    const size = typeof bytes === 'string' ? parseInt(bytes, 10) : bytes;
     if (size === 0) return "0 B";
     const i = Math.floor(Math.log(size) / Math.log(1024));
     return `${(size / Math.pow(1024, i)).toFixed(2)} ${["B", "KB", "MB", "GB", "TB"][i]}`;
   };
 
-  const handleDownload = (itag?: number) => {
-    if (!url) return;
-    const downloadUrl = `/api/download?url=${encodeURIComponent(url)}${itag ? `&itag=${itag}` : ""}`;
-    window.location.href = downloadUrl;
+  const handleDownload = (videoUrl: string, itag?: number) => {
+    const downloadId = Math.random().toString(36).substring(2, 15);
+    
+    setDownloads(prev => ({
+      ...prev,
+      [videoUrl]: { downloaded: 0, total: 0, active: true }
+    }));
+
+    const es = new EventSource(`/api/progress?downloadId=${downloadId}`);
+    
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'progress') {
+        setDownloads(prev => ({
+          ...prev,
+          [videoUrl]: { 
+            downloaded: data.downloaded, 
+            total: data.total, 
+            active: true 
+          }
+        }));
+      }
+      if (data.type === 'complete') {
+        setDownloads(prev => ({
+          ...prev,
+          [videoUrl]: { ...prev[videoUrl], active: false }
+        }));
+        es.close();
+      }
+    };
+
+    es.onerror = () => {
+       es.close();
+    };
+
+    const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&downloadId=${downloadId}${itag ? `&itag=${itag}` : ""}`;
+    
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const toggleExpand = (url: string) => {
+    setExpandedVideos(prev => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      return next;
+    });
+  };
+
+  const handleDownloadAll = () => {
+    videos.forEach(v => {
+      handleDownload(v.url);
+    });
   };
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-50 font-sans selection:bg-rose-500/30">
+    <div className="min-h-screen bg-neutral-950 text-neutral-50 font-sans selection:bg-rose-500/30 pb-20">
       {/* Background Decorative Graphic */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none flex justify-center items-start">
         <div className="w-[1000px] h-[500px] bg-rose-500/20 blur-[120px] rounded-[100%] opacity-30 animate-pulse -translate-y-1/2"></div>
       </div>
 
-      <main className="relative z-10 max-w-4xl mx-auto px-6 py-16 md:py-24">
+      <main className="relative z-10 max-w-5xl mx-auto px-6 py-16 md:py-24">
         {/* Header section */}
         <div className="text-center space-y-4 mb-12">
           <div className="inline-flex items-center justify-center p-3 bg-neutral-900 border border-neutral-800 rounded-2xl mb-4 shadow-xl">
             <Film className="w-8 h-8 text-rose-500" strokeWidth={1.5} />
           </div>
           <h1 className="text-4xl md:text-5xl font-semibold tracking-tight text-white">
-            Fetch. Download. <span className="text-rose-500">Keep.</span>
+            Fetch. Download. <span className="text-rose-500">Batch.</span>
           </h1>
           <p className="text-neutral-400 text-lg max-w-xl mx-auto font-medium">
-            Paste a YouTube URL below to extract high-quality video and audio formats instantly. No ads, no nonsense.
+            Paste one or multiple YouTube URLs below. Extract high-quality video and audio formats instantly.
           </p>
         </div>
 
@@ -115,38 +191,52 @@ export default function App() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
           onSubmit={fetchVideoInfo} 
-          className="relative group max-w-2xl mx-auto"
+          className="relative group max-w-3xl mx-auto"
         >
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-rose-500 to-orange-500 rounded-full opacity-30 group-focus-within:opacity-100 transition duration-500 blur-sm"></div>
-          <div className="relative flex items-center bg-neutral-900 rounded-full shadow-2xl p-2 border border-neutral-800 focus-within:border-neutral-700 transition-colors">
-            <div className="pl-4 pr-2 text-neutral-500">
-              <Search className="w-5 h-5" />
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-rose-500 to-orange-500 rounded-2xl opacity-30 group-focus-within:opacity-100 transition duration-500 blur-sm"></div>
+          <div className="relative bg-neutral-900 rounded-2xl shadow-2xl p-2 border border-neutral-800 focus-within:border-neutral-700 transition-colors flex flex-col sm:flex-row gap-2 items-end sm:items-center">
+            <div className="flex-1 w-full pl-2">
+              <textarea
+                placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..."
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                className="w-full bg-transparent px-2 py-4 text-white placeholder:text-neutral-600 focus:outline-none font-mono text-sm sm:text-base resize-none min-h-[56px]"
+                rows={inputText.split('\n').length > 1 ? Math.min(inputText.split('\n').length, 5) : 1}
+                required
+              />
             </div>
-            <input
-              type="text"
-              placeholder="https://www.youtube.com/watch?v=..."
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              className="flex-1 bg-transparent px-2 py-3 text-white placeholder:text-neutral-600 focus:outline-none font-mono text-sm sm:text-base selection:bg-rose-500/30"
-              required
-            />
-            <button
-              type="submit"
-              disabled={loading || !url}
-              className="bg-white hover:bg-neutral-200 text-neutral-950 font-semibold px-6 py-2.5 rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:scale-105 active:scale-95"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Fetching...</span>
-                </>
-              ) : (
-                <>
-                  <Video className="w-4 h-4" />
-                  <span>Parse</span>
-                </>
-              )}
-            </button>
+            
+            <div className="flex items-center gap-2 p-2 sm:p-0 w-full sm:w-auto flex-col sm:flex-row justify-end">
+              <div className="flex w-full gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={handleCopyUrl}
+                  disabled={!inputText}
+                  className="p-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl transition-colors disabled:opacity-50 border border-neutral-700"
+                  title="Copy URL(s)"
+                >
+                  {copied ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
+                </button>
+                
+                <button
+                  type="submit"
+                  disabled={loading || !inputText}
+                  className="bg-white hover:bg-neutral-200 text-neutral-950 font-semibold px-6 py-3 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:scale-105 active:scale-95 whitespace-nowrap w-full sm:w-auto"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Parsing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-4 h-4" />
+                      <span>Fetch Video{inputText.includes('\n') || inputText.includes(',') ? 's' : ''}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </motion.form>
 
@@ -167,140 +257,218 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Batch Actions */}
+        <AnimatePresence>
+           {videos.length > 1 && (
+             <motion.div
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               className="mt-12 flex items-center justify-between max-w-4xl mx-auto"
+             >
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                   <Film className="w-5 h-5 text-rose-500" />
+                   Batch Results ({videos.length})
+                </h2>
+                <button
+                  onClick={handleDownloadAll}
+                  className="bg-neutral-800 hover:bg-neutral-700 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors border border-neutral-700"
+                >
+                   <HardDriveDownload className="w-4 h-4" />
+                   <span className="hidden sm:inline">Download All (Default Quality)</span>
+                   <span className="sm:hidden">Download All</span>
+                </button>
+             </motion.div>
+           )}
+        </AnimatePresence>
+
         {/* Results section */}
         <AnimatePresence>
-          {videoInfo && (
+          {videos.length > 0 && (
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -30 }}
-              className="mt-16 grid grid-cols-1 lg:grid-cols-12 gap-8"
+              className={`mt-8 grid gap-6 ${videos.length === 1 ? 'max-w-4xl mx-auto' : 'max-w-4xl mx-auto'}`}
             >
-              {/* Media Preview Card */}
-              <div className="lg:col-span-5">
-                <div className="bg-neutral-900/80 backdrop-blur-xl border border-neutral-800 p-4 rounded-3xl sticky top-8">
-                  <div className="relative aspect-video rounded-2xl overflow-hidden bg-neutral-950 border border-neutral-800">
-                    {videoInfo.thumbnail ? (
-                      <img 
-                        src={videoInfo.thumbnail} 
-                        alt={videoInfo.title} 
-                        className="object-cover w-full h-full"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <FileVideo2 className="w-12 h-12 text-neutral-800" />
-                      </div>
-                    )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
-                    <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md text-xs font-mono border border-white/10">
-                      {Math.floor(parseInt(videoInfo.lengthSeconds) / 60)}:
-                      {String(parseInt(videoInfo.lengthSeconds) % 60).padStart(2, '0')}
-                    </div>
-                  </div>
-                  <div className="mt-5 px-1">
-                    <h2 className="text-xl font-bold leading-snug line-clamp-2">
-                      {videoInfo.title}
-                    </h2>
-                    <p className="text-neutral-400 mt-2 text-sm font-medium flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                      {videoInfo.author}
-                    </p>
-                  </div>
-                  
-                  {/* Default Download Action */}
-                  <div className="mt-6">
-                    <button 
-                      onClick={() => handleDownload()}
-                      className="w-full bg-gradient-to-r from-rose-500 to-orange-500 hover:from-rose-400 hover:to-orange-400 text-white font-semibold py-3 rounded-xl transition-all shadow-lg shadow-rose-500/20 flex items-center justify-center gap-2"
-                    >
-                      <HardDriveDownload className="w-5 h-5" />
-                      Download Best Quality (Default)
-                    </button>
-                  </div>
-                </div>
-              </div>
+              {videos.map((videoInfo, index) => {
+                const isExpanded = expandedVideos.has(videoInfo.url);
+                const downloadState = downloads[videoInfo.url];
+                const progressPercent = downloadState && downloadState.total ? (downloadState.downloaded / downloadState.total) * 100 : 0;
+                
+                return (
+                 <motion.div 
+                   key={index}
+                   layout
+                   initial={{ opacity: 0 }}
+                   animate={{ opacity: 1 }}
+                   className="bg-neutral-900/80 backdrop-blur-xl border border-neutral-800 rounded-3xl overflow-hidden flex flex-col transition-colors hover:border-neutral-700"
+                 >
+                   {/* Compact Header Row */}
+                   <div className="p-4 flex flex-col md:flex-row gap-4 items-start md:items-center">
+                     <div className="relative w-full md:w-56 aspect-video shrink-0 rounded-xl overflow-hidden bg-neutral-950 border border-neutral-800 hidden sm:block">
+                       {videoInfo.thumbnail ? (
+                         <img 
+                           src={videoInfo.thumbnail} 
+                           alt={videoInfo.title} 
+                           className="object-cover w-full h-full"
+                         />
+                       ) : (
+                         <div className="w-full h-full flex items-center justify-center">
+                           <FileVideo2 className="w-8 h-8 text-neutral-800" />
+                         </div>
+                       )}
+                       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+                       <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono border border-white/10">
+                         {Math.floor(parseInt(videoInfo.lengthSeconds) / 60)}:
+                         {String(parseInt(videoInfo.lengthSeconds) % 60).padStart(2, '0')}
+                       </div>
+                     </div>
 
-              {/* Formats List */}
-              <div className="lg:col-span-7 space-y-6">
-                <div>
-                  <h3 className="text-lg font-semibold flex items-center gap-2 text-white">
-                    <Video className="w-5 h-5 text-blue-400" />
-                    Video Options
-                  </h3>
-                  <div className="mt-4 grid gap-3">
-                    {videoInfo.formats
-                      .filter(f => f.hasVideo)
-                      .sort((a, b) => {
-                        const aRes = parseInt(a.qualityLabel || "0");
-                        const bRes = parseInt(b.qualityLabel || "0");
-                        return bRes - aRes;
-                      })
-                      .map((format, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-4 bg-neutral-900 border border-neutral-800 rounded-2xl hover:border-neutral-700 transition-colors">
-                          <div className="flex flex-col gap-1">
-                            <span className="font-semibold flex items-center gap-2 text-base">
-                              {format.qualityLabel || 'Unknown'} 
-                              <span className="px-2 py-0.5 rounded text-[10px] font-mono tracking-wider font-bold bg-neutral-800 text-neutral-400 uppercase">
-                                {format.container}
-                              </span>
-                            </span>
-                            <span className="text-xs text-neutral-500 font-medium">
-                              {format.hasAudio ? 'Includes Audio' : 'No Audio (Video Only)'} • {formatFileSize(format.contentLength)}
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => handleDownload(format.itag)}
-                            className="p-3 bg-neutral-800/50 hover:bg-neutral-800 text-white rounded-xl transition-colors shrink-0"
-                            title="Download this format"
-                          >
-                            <Download className="w-5 h-5" />
-                          </button>
-                        </div>
-                      ))}
-                  </div>
-                </div>
+                     <div className="flex-1 min-w-0 flex flex-col justify-center w-full">
+                       <h2 className="text-lg font-bold leading-tight line-clamp-2" title={videoInfo.title}>
+                         {videoInfo.title}
+                       </h2>
+                       <p className="text-neutral-400 mt-1 text-sm font-medium flex items-center gap-2">
+                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                         {videoInfo.author}
+                       </p>
+                     </div>
 
-                <div className="pt-6 border-t border-neutral-800">
-                  <h3 className="text-lg font-semibold flex items-center gap-2 text-white">
-                    <Music className="w-5 h-5 text-indigo-400" />
-                    Audio-Only Options
-                  </h3>
-                  <div className="mt-4 grid gap-3">
-                    {videoInfo.formats
-                      .filter(f => !f.hasVideo && f.hasAudio)
-                      .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))
-                      .map((format, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-4 bg-neutral-900 border border-neutral-800 rounded-2xl hover:border-neutral-700 transition-colors">
-                          <div className="flex flex-col gap-1">
-                            <span className="font-semibold flex items-center gap-2 text-base">
-                              {format.audioBitrate} kbps
-                              <span className="px-2 py-0.5 rounded text-[10px] font-mono tracking-wider font-bold bg-neutral-800 text-neutral-400 uppercase">
-                                {format.container}
-                              </span>
-                            </span>
-                            <span className="text-xs text-neutral-500 font-medium">
-                              Audio Only • {formatFileSize(format.contentLength)}
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => handleDownload(format.itag)}
-                            className="p-3 bg-neutral-800/50 hover:bg-neutral-800 text-white rounded-xl transition-colors shrink-0"
-                            title="Download audio"
-                          >
-                            <Download className="w-5 h-5" />
-                          </button>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              </div>
+                     <div className="flex flex-row items-center gap-2 w-full md:w-auto mt-2 md:mt-0 justify-end">
+                       <button 
+                         onClick={() => handleDownload(videoInfo.url)}
+                         className="flex-1 md:flex-none bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 font-medium px-4 py-3 md:py-2.5 rounded-xl transition-all border border-rose-500/20 flex items-center justify-center gap-2"
+                         title="Download Best Quality"
+                       >
+                         <HardDriveDownload className="w-4 h-4" />
+                         <span>Download</span>
+                       </button>
+                       <button
+                         onClick={() => toggleExpand(videoInfo.url)}
+                         className="p-3 md:p-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl transition-colors border border-neutral-700 shrink-0"
+                       >
+                         {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+                       </button>
+                     </div>
+                   </div>
 
+                   {/* Progress Bar Area */}
+                   <AnimatePresence>
+                     {downloadState && downloadState.active && (
+                       <motion.div 
+                         initial={{ height: 0, opacity: 0 }}
+                         animate={{ height: "auto", opacity: 1 }}
+                         exit={{ height: 0, opacity: 0 }}
+                         className="px-4 pb-4"
+                       >
+                         <div className="flex items-center justify-between text-xs text-neutral-400 mb-2 font-mono">
+                           <span>Downloading...</span>
+                           <span>{formatFileSize(downloadState.downloaded)} / {formatFileSize(downloadState.total)}</span>
+                         </div>
+                         <div className="w-full bg-neutral-950 rounded-full h-2 border border-neutral-800 overflow-hidden">
+                           <div 
+                             className="bg-gradient-to-r from-rose-500 to-orange-500 h-2 rounded-full transition-all duration-300 ease-out relative"
+                             style={{ width: `${Math.max(progressPercent, 2)}%` }}
+                           >
+                              {/* animated shimmer on progress bar */}
+                              <div className="absolute inset-0 bg-white/20 w-full animate-pulse"></div>
+                           </div>
+                         </div>
+                       </motion.div>
+                     )}
+                   </AnimatePresence>
+
+                   {/* Expanded Formats list */}
+                   <AnimatePresence>
+                     {isExpanded && (
+                       <motion.div
+                         initial={{ height: 0, opacity: 0 }}
+                         animate={{ height: "auto", opacity: 1 }}
+                         exit={{ height: 0, opacity: 0 }}
+                         className="border-t border-neutral-800 bg-neutral-900/50"
+                       >
+                         <div className="p-4 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Video Formats */}
+                            <div>
+                               <h3 className="text-sm font-bold flex items-center gap-2 text-white/80 mb-3 uppercase tracking-wider">
+                                 <Video className="w-4 h-4 text-blue-400" /> Video
+                               </h3>
+                               <div className="grid gap-2">
+                                 {videoInfo.formats
+                                  .filter(f => f.hasVideo)
+                                  .sort((a, b) => parseInt(b.qualityLabel || "0") - parseInt(a.qualityLabel || "0"))
+                                  .slice(0, 8)
+                                  .map((format, idx) => (
+                                    <div key={idx} className="flex items-center justify-between p-3 bg-neutral-900 border border-neutral-800 rounded-xl hover:border-neutral-700 transition-colors group">
+                                      <div className="flex flex-col">
+                                        <span className="font-semibold flex items-center gap-2 text-sm text-neutral-200">
+                                          {format.qualityLabel || 'Unknown'} 
+                                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-neutral-800 text-neutral-400 uppercase">
+                                            {format.container}
+                                          </span>
+                                        </span>
+                                        <span className="text-[11px] text-neutral-500 font-medium mt-0.5">
+                                          {format.hasAudio ? 'Inc. Audio' : 'Video Only'} • {formatFileSize(format.contentLength)}
+                                        </span>
+                                      </div>
+                                      <button
+                                        onClick={() => handleDownload(videoInfo.url, format.itag)}
+                                        className="p-2 bg-neutral-800 group-hover:bg-blue-500/20 group-hover:text-blue-400 text-neutral-400 rounded-lg transition-colors shrink-0"
+                                      >
+                                        <Download className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  ))}
+                               </div>
+                            </div>
+                            
+                            {/* Audio Formats */}
+                            <div>
+                               <h3 className="text-sm font-bold flex items-center gap-2 text-white/80 mb-3 uppercase tracking-wider">
+                                 <Music className="w-4 h-4 text-indigo-400" /> Audio Only
+                               </h3>
+                               <div className="grid gap-2">
+                                 {videoInfo.formats
+                                    .filter(f => !f.hasVideo && f.hasAudio)
+                                    .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))
+                                    .slice(0, 5)
+                                    .map((format, idx) => (
+                                      <div key={idx} className="flex items-center justify-between p-3 bg-neutral-900 border border-neutral-800 rounded-xl hover:border-neutral-700 transition-colors group">
+                                        <div className="flex flex-col">
+                                          <span className="font-semibold flex items-center gap-2 text-sm text-neutral-200">
+                                            {format.audioBitrate} kbps
+                                            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-neutral-800 text-neutral-400 uppercase">
+                                              {format.container}
+                                            </span>
+                                          </span>
+                                          <span className="text-[11px] text-neutral-500 font-medium mt-0.5">
+                                            {formatFileSize(format.contentLength)}
+                                          </span>
+                                        </div>
+                                        <button
+                                          onClick={() => handleDownload(videoInfo.url, format.itag)}
+                                          className="p-2 bg-neutral-800 group-hover:bg-indigo-500/20 group-hover:text-indigo-400 text-neutral-400 rounded-lg transition-colors shrink-0"
+                                        >
+                                          <Download className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    ))}
+                               </div>
+                            </div>
+                         </div>
+                       </motion.div>
+                     )}
+                   </AnimatePresence>
+                 </motion.div>
+                );
+              })}
             </motion.div>
           )}
         </AnimatePresence>
         
         {/* Footer info text if empty */}
-        {!videoInfo && !loading && (
+        {videos.length === 0 && !loading && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -316,4 +484,3 @@ export default function App() {
     </div>
   );
 }
-
